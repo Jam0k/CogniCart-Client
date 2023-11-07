@@ -27,22 +27,34 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S',
     handlers=[RotatingFileHandler(LOG_FILE_PATH, maxBytes=10000, backupCount=3)]
 )
-logger = app.logger
+logger = logging.getLogger("ConfigLogger")
 
-# Configuration caching
-_config = None
+# Create a default config file if one does not exist
+def create_default_config():
+    default_config = {
+        "setting1": "value1",
+        "setting2": "value2"
+    }
+    with open(CONFIG_FILE_PATH, 'w') as config_file:
+        json.dump(default_config, config_file, indent=4)
+    logger.info("Created default configuration file.")
 
+# Load the configuration, create if not exists
 def load_config():
-    global _config
-    if _config is None:
-        try:
-            with open(CONFIG_FILE_PATH, 'r') as config_file:
-                _config = json.load(config_file)
-                logger.info("Successfully loaded configuration file.")
-        except Exception as e:
-            logger.error(f"Failed to load configuration file: {e}")
-            _config = {}
-    return _config
+    if not os.path.exists(CONFIG_FILE_PATH):
+        create_default_config()
+
+    try:
+        with open(CONFIG_FILE_PATH, 'r') as config_file:
+            config = json.load(config_file)
+            logger.info("Successfully loaded configuration file.")
+            return config
+    except Exception as e:
+        logger.error(f"Failed to load configuration file: {e}")
+        return {}
+
+# Load or create configuration file at startup
+config = load_config()
 
 # Exception handling decorator
 def handle_exceptions(f):
@@ -56,6 +68,7 @@ def handle_exceptions(f):
     return wrapped
 
 # HEALTH CHECK ENDPOINTS #
+
 @app.route('/api/health/system_status', methods=['GET'])
 @handle_exceptions
 def health_check():
@@ -83,8 +96,7 @@ def network_info():
 @app.route('/api/health/config_status', methods=['GET'])
 @handle_exceptions
 def get_config():
-    config_data = load_config()
-    return jsonify(config_data)
+    return jsonify(config)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
