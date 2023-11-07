@@ -69,7 +69,7 @@ def handle_exceptions(f):
 
 # HEALTH CHECK ENDPOINTS #
 
-@app.route('/api/health/system_status', methods=['GET'])
+@app.route('/api/health', methods=['GET'])
 @handle_exceptions
 def health_check():
     cpu_usage = psutil.cpu_percent(interval=1)
