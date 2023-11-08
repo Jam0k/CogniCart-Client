@@ -1,4 +1,6 @@
 {
-    "setting1": "value1",
-    "setting2": "value2"
+    "host": "0.0.0.0",
+    "port": 5000,
+    "debug": true,
+    "log_file": "logs\\app.log"
 }
