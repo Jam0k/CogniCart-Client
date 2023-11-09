@@ -1,12 +1,17 @@
-from flask import Flask, jsonify, send_file
+from flask import Flask, jsonify
 import psutil
 import socket
 import subprocess
 import logging
 import json
 import os
+import time
 from datetime import datetime
-from io import BytesIO
+from picamera2 import Picamera2
+import tempfile
+import numpy as np
+from PIL import Image
+import base64
 
 app = Flask(__name__)
 
@@ -114,20 +119,47 @@ def camera_check():
     except Exception as e:
         logging.exception("Error fetching camera data.")
         return jsonify({"status": f"Error fetching camera data: {str(e)}"})
+    
+picam2 = None  # Global variable for the camera
+
+def initialize_camera():
+    global picam2
+    try:
+        if picam2 is None:
+            picam2 = Picamera2()
+            camera_config = picam2.create_still_configuration(main={"size": (1920, 1080)})
+            picam2.configure(camera_config)
+            picam2.start()
+            time.sleep(2)  # Allow the camera to adjust to lighting conditions
+    except Exception as e:
+        logging.exception("Error initializing camera.")
+        picam2 = None
 
 @app.route('/api/take_photo', methods=['GET'])
 def take_photo():
+    global picam2
+    initialize_camera()  # Ensure camera is initialized
+
+    if not picam2:
+        return jsonify({"status": "error", "message": "Camera initialization failed"})
+
     try:
-        image_stream = BytesIO()
-        process = subprocess.Popen(["libcamera-still", "-o", "-"], stdout=subprocess.PIPE)
-        out, err = process.communicate()
-        image_stream.write(out)
-        image_stream.seek(0)
-        logging.info("Photo taken successfully.")
-        return send_file(image_stream, mimetype='image/jpeg', as_attachment=True, download_name='photo.jpg')
+        # Capture the image to a temporary file
+        with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as temp_file:
+            picam2.capture_file(temp_file.name)
+
+            # Encode the image in base64
+            with open(temp_file.name, 'rb') as image_file:
+                encoded_image = base64.b64encode(image_file.read()).decode('utf-8')
+            os.remove(temp_file.name)  # Remove the temporary file
     except Exception as e:
         logging.exception("Error capturing photo.")
-        return jsonify({"status": f"Error capturing photo: {str(e)}"})
+        return jsonify({"status": "error", "message": str(e)})
+
+    return jsonify({"status": "success", "image": encoded_image})
+
+
+
 
 if __name__ == '__main__':
     # Use the host and port from the configuration
