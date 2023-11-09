@@ -1,17 +1,16 @@
+from picamera2 import Picamera2
 from flask import Flask, jsonify
-import psutil
-import socket
-import subprocess
+import threading
+import requests
+import cv2
+import numpy as np
+import base64
 import logging
+import time
 import json
 import os
-import time
 from datetime import datetime
-from picamera2 import Picamera2
-import tempfile
-import numpy as np
-from PIL import Image
-import base64
+
 
 app = Flask(__name__)
 
@@ -50,6 +49,59 @@ logging.basicConfig(level=logging.INFO,
                         logging.FileHandler(config.get('log_file', default_config['log_file'])),
                         logging.StreamHandler()
                     ])
+
+# Initialize global variables
+motion_detected = False
+stop_threads = False
+central_server_url = "http://192.168.0.21:5000"  # Replace with your central server URL
+
+# Initialize picamera2
+picam2 = Picamera2()
+picam2_config = picam2.create_preview_configuration()
+picam2.configure(picam2_config)
+picam2.start()
+
+def motion_detection_thread():
+    global motion_detected, stop_threads, picam2
+    avg_frame = None
+    last_motion_time = None
+    motion_cooldown = 5  # Cooldown period in seconds after detecting motion
+    frame_update_time = 2  # Time in seconds to update the average frame
+
+    while not stop_threads:
+        frame = picam2.capture_array()
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray = cv2.GaussianBlur(gray, (21, 21), 0)
+
+        if avg_frame is None:
+            avg_frame = gray.copy().astype("float")
+            last_motion_time = time.time()
+            continue
+
+        cv2.accumulateWeighted(gray, avg_frame, 0.5)
+        frame_delta = cv2.absdiff(gray, cv2.convertScaleAbs(avg_frame))
+
+        thresh = cv2.threshold(frame_delta, 25, 255, cv2.THRESH_BINARY)[1]
+        thresh = cv2.dilate(thresh, None, iterations=2)
+        contours, _ = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        motion_detected = False
+        for c in contours:
+            if cv2.contourArea(c) < 1000:  # Adjust as needed for sensitivity
+                continue
+            motion_detected = True
+            last_motion_time = time.time()
+            logging.info("Motion detected!")
+            break  # Once motion is detected, no need to check further contours
+
+        if not motion_detected and last_motion_time and time.time() - last_motion_time >= motion_cooldown:
+            # Reset the background frame after the cooldown period if no motion is detected
+            first_frame = gray
+            logging.info("Resetting background model.")
+
+        time.sleep(0.1)
+
+
 
 def fetch_data_from_system(command, error_message="N/A"):
     try:
@@ -119,50 +171,15 @@ def camera_check():
     except Exception as e:
         logging.exception("Error fetching camera data.")
         return jsonify({"status": f"Error fetching camera data: {str(e)}"})
-    
-picam2 = None  # Global variable for the camera
-
-def initialize_camera():
-    global picam2
-    try:
-        if picam2 is None:
-            picam2 = Picamera2()
-            camera_config = picam2.create_still_configuration(main={"size": (1920, 1080)})
-            picam2.configure(camera_config)
-            picam2.start()
-            time.sleep(2)  # Allow the camera to adjust to lighting conditions
-    except Exception as e:
-        logging.exception("Error initializing camera.")
-        picam2 = None
-
-@app.route('/api/take_photo', methods=['GET'])
-def take_photo():
-    global picam2
-    initialize_camera()  # Ensure camera is initialized
-
-    if not picam2:
-        return jsonify({"status": "error", "message": "Camera initialization failed"})
-
-    try:
-        # Capture the image to a temporary file
-        with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as temp_file:
-            picam2.capture_file(temp_file.name)
-
-            # Encode the image in base64
-            with open(temp_file.name, 'rb') as image_file:
-                encoded_image = base64.b64encode(image_file.read()).decode('utf-8')
-            os.remove(temp_file.name)  # Remove the temporary file
-    except Exception as e:
-        logging.exception("Error capturing photo.")
-        return jsonify({"status": "error", "message": str(e)})
-
-    return jsonify({"status": "success", "image": encoded_image})
-
-
-
 
 if __name__ == '__main__':
-    # Use the host and port from the configuration
-    app.run(host=config.get('host', default_config['host']),
-            port=config.get('port', default_config['port']),
-            debug=config.get('debug', default_config['debug']))
+    # Start the motion detection thread
+    motion_thread = threading.Thread(target=motion_detection_thread)
+    motion_thread.daemon = True
+    motion_thread.start()
+
+    # Run Flask application
+    app.run(host=config.get('host', '0.0.0.0'),
+            port=config.get('port', 5000),
+            debug=config.get('debug', True),
+            use_reloader=False)  # Disable the reloader
