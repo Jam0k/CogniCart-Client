@@ -67,7 +67,7 @@ def motion_detection_thread():
     global motion_detected, stop_threads, picam2
     avg_frame = None
     last_motion_time = None
-    motion_cooldown = 5  # Cooldown period in seconds after detecting motion
+    motion_cooldown = 1  # Cooldown period in seconds
 
     while not stop_threads:
         frame = picam2.capture_array()
@@ -76,7 +76,6 @@ def motion_detection_thread():
 
         if avg_frame is None:
             avg_frame = gray.copy().astype("float")
-            last_motion_time = time.time()
             continue
 
         cv2.accumulateWeighted(gray, avg_frame, 0.5)
@@ -90,7 +89,7 @@ def motion_detection_thread():
         for c in contours:
             if cv2.contourArea(c) < 1000:  # Adjust as needed for sensitivity
                 continue
-            if not motion_detected:
+            if not motion_detected and (last_motion_time is None or time.time() - last_motion_time >= motion_cooldown):
                 # This is the first motion detected in this loop, notify the central server
                 motion_detected = True
                 try:
@@ -111,6 +110,7 @@ def motion_detection_thread():
             logging.info("No motion detected. Background model reset.")
 
         time.sleep(0.1)
+
 
 def fetch_data_from_system(command, error_message="N/A"):
     try:
@@ -183,13 +183,23 @@ def camera_check():
     
 @app.route('/api/take_photo', methods=['GET'])
 def take_photo():
-    # Capture a frame from picamera2
     frame = picam2.capture_array()
-    # Convert the frame to a format that can be sent over the network, e.g., base64
     _, buffer = cv2.imencode('.jpg', frame)
     photo_data = base64.b64encode(buffer).decode()
 
-    return jsonify({"status": "success", "image": photo_data})
+    # Include client_id in the POST request
+    try:
+        response = requests.post(
+            f"{central_server_url}/api/receive_image", 
+            json={"image": photo_data, "client_id": config['client_id']}
+        )
+        if response.status_code == 200:
+            return jsonify({"status": "success", "image": photo_data})
+        else:
+            return jsonify({"status": "error", "message": "Failed to send image to server"})
+    except requests.exceptions.RequestException as e:
+        return jsonify({"status": "error", "message": str(e)})
+
 
 
 if __name__ == '__main__':
