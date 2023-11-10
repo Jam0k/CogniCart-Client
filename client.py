@@ -1,3 +1,5 @@
+import socket
+import subprocess
 from picamera2 import Picamera2
 from flask import Flask, jsonify
 import threading
@@ -10,7 +12,7 @@ import time
 import json
 import os
 from datetime import datetime
-
+import psutil
 
 app = Flask(__name__)
 
@@ -66,7 +68,6 @@ def motion_detection_thread():
     avg_frame = None
     last_motion_time = None
     motion_cooldown = 5  # Cooldown period in seconds after detecting motion
-    frame_update_time = 2  # Time in seconds to update the average frame
 
     while not stop_threads:
         frame = picam2.capture_array()
@@ -89,19 +90,27 @@ def motion_detection_thread():
         for c in contours:
             if cv2.contourArea(c) < 1000:  # Adjust as needed for sensitivity
                 continue
-            motion_detected = True
-            last_motion_time = time.time()
-            logging.info("Motion detected!")
-            break  # Once motion is detected, no need to check further contours
+            if not motion_detected:
+                # This is the first motion detected in this loop, notify the central server
+                motion_detected = True
+                try:
+                    # Send a POST request to the central server's motion_detected endpoint
+                    response = requests.post(f"{central_server_url}/api/motion_detected", json={"client_id": config['client_id']})
+                    if response.status_code == 200:
+                        logging.info(f"Motion detected! Alert sent to central server.")
+                    else:
+                        logging.error(f"Alert to central server failed with status code: {response.status_code}")
+                except requests.exceptions.RequestException as e:
+                    logging.exception(f"Error sending alert to central server: {str(e)}")
+                last_motion_time = time.time()
+                break  # Once motion is detected, no need to check further contours
 
         if not motion_detected and last_motion_time and time.time() - last_motion_time >= motion_cooldown:
             # Reset the background frame after the cooldown period if no motion is detected
-            first_frame = gray
-            logging.info("Resetting background model.")
+            avg_frame = gray.copy().astype("float")
+            logging.info("No motion detected. Background model reset.")
 
         time.sleep(0.1)
-
-
 
 def fetch_data_from_system(command, error_message="N/A"):
     try:
@@ -171,6 +180,17 @@ def camera_check():
     except Exception as e:
         logging.exception("Error fetching camera data.")
         return jsonify({"status": f"Error fetching camera data: {str(e)}"})
+    
+@app.route('/api/take_photo', methods=['GET'])
+def take_photo():
+    # Capture a frame from picamera2
+    frame = picam2.capture_array()
+    # Convert the frame to a format that can be sent over the network, e.g., base64
+    _, buffer = cv2.imencode('.jpg', frame)
+    photo_data = base64.b64encode(buffer).decode()
+
+    return jsonify({"status": "success", "image": photo_data})
+
 
 if __name__ == '__main__':
     # Start the motion detection thread
