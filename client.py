@@ -55,7 +55,7 @@ logging.basicConfig(level=logging.INFO,
 # Initialize global variables
 motion_detected = False
 stop_threads = False
-central_server_url = "http://192.168.0.21:5000"  # Replace with your central server URL
+central_server_url = "http://87.242.203.182:5000"  # Replace with your central server URL
 
 # Initialize picamera2
 picam2 = Picamera2()
@@ -67,7 +67,7 @@ def motion_detection_thread():
     global motion_detected, stop_threads, picam2
     avg_frame = None
     last_motion_time = None
-    motion_cooldown = 1  # Cooldown period in seconds
+    motion_cooldown = 1  # Cooldown period in seconds, adjust as needed
 
     while not stop_threads:
         frame = picam2.capture_array()
@@ -85,31 +85,62 @@ def motion_detection_thread():
         thresh = cv2.dilate(thresh, None, iterations=2)
         contours, _ = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        motion_detected = False
+        motion_in_this_frame = False
         for c in contours:
             if cv2.contourArea(c) < 1000:  # Adjust as needed for sensitivity
                 continue
-            if not motion_detected and (last_motion_time is None or time.time() - last_motion_time >= motion_cooldown):
-                # This is the first motion detected in this loop, notify the central server
+            motion_in_this_frame = True
+            break
+
+        if motion_in_this_frame:
+            if last_motion_time is None or time.time() - last_motion_time >= motion_cooldown:
+                # This is the first motion detected after the cooldown period
+                last_motion_time = time.time()
                 motion_detected = True
+
                 try:
                     # Send a POST request to the central server's motion_detected endpoint
                     response = requests.post(f"{central_server_url}/api/motion_detected", json={"client_id": config['client_id']})
                     if response.status_code == 200:
-                        logging.info(f"Motion detected! Alert sent to central server.")
+                        logging.info(f"Motion detected and alert sent to central server.")
                     else:
                         logging.error(f"Alert to central server failed with status code: {response.status_code}")
                 except requests.exceptions.RequestException as e:
                     logging.exception(f"Error sending alert to central server: {str(e)}")
-                last_motion_time = time.time()
-                break  # Once motion is detected, no need to check further contours
+        else:
+            motion_detected = False
 
-        if not motion_detected and last_motion_time and time.time() - last_motion_time >= motion_cooldown:
-            # Reset the background frame after the cooldown period if no motion is detected
-            avg_frame = gray.copy().astype("float")
-            logging.info("No motion detected. Background model reset.")
+        time.sleep(0.1)  # Adjust the sleep time as needed
 
-        time.sleep(0.1)
+@app.route('/api/start_capture', methods=['POST'])
+def start_capture():
+    global capture_active
+    capture_active = True
+    return jsonify({"status": "Capture started"}), 200
+
+@app.route('/api/stop_capture', methods=['POST'])
+def stop_capture():
+    global capture_active
+    capture_active = False
+    return jsonify({"status": "Capture stopped"}), 200
+
+def take_and_send_frame():
+    frame = picam2.capture_array()
+    _, buffer = cv2.imencode('.jpg', frame)
+    photo_data = base64.b64encode(buffer).decode()
+
+    try:
+        response = requests.post(
+            f"{central_server_url}/api/receive_image", 
+            json={"image": photo_data, "client_id": config['client_id']}
+        )
+        if response.status_code == 200:
+            logging.info("Frame sent to server successfully.")
+        else:
+            logging.error("Failed to send frame to server.")
+    except requests.exceptions.RequestException as e:
+        logging.exception(f"Error sending frame to server: {str(e)}")
+
 
 
 def fetch_data_from_system(command, error_message="N/A"):
@@ -200,6 +231,25 @@ def take_photo():
     except requests.exceptions.RequestException as e:
         return jsonify({"status": "error", "message": str(e)})
 
+@app.route('/api/manual_capture', methods=['GET'])
+def manual_capture():
+    try:
+        # Capture and send frame from this client
+        take_and_send_frame()
+        logging.info("Manual capture triggered and frame sent to server.")
+
+        # Notify the server to trigger motion detection process
+        response = requests.post(f"{central_server_url}/api/motion_detected", json={"client_id": config['client_id']})
+        if response.status_code == 200:
+            logging.info("Server notified for manual motion detection.")
+            return jsonify({"status": "success", "message": "Manual capture triggered and server notified"})
+        else:
+            logging.error("Failed to notify server for manual motion detection.")
+            return jsonify({"status": "error", "message": "Failed to notify server"})
+
+    except Exception as e:
+        logging.exception(f"Error during manual capture: {str(e)}")
+        return jsonify({"status": "error", "message": str(e)})
 
 
 if __name__ == '__main__':
