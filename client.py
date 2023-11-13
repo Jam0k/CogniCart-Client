@@ -57,10 +57,11 @@ motion_detected = False
 stop_threads = False
 central_server_url = "http://87.242.203.182:5000"  # Replace with your central server URL
 
-# Initialize picamera2
+# Initialize picamera2 with high-resolution configuration
 picam2 = Picamera2()
-picam2_config = picam2.create_preview_configuration()
-picam2.configure(picam2_config)
+high_res_config = picam2.create_still_configuration()
+high_res_config['main']['size'] = (4608, 2592)
+picam2.configure(high_res_config)
 picam2.start()
 
 def motion_detection_thread():
@@ -218,10 +219,9 @@ def take_photo():
     _, buffer = cv2.imencode('.jpg', frame)
     photo_data = base64.b64encode(buffer).decode()
 
-    # Include client_id in the POST request
     try:
         response = requests.post(
-            f"{central_server_url}/api/receive_image", 
+            f"{central_server_url}/api/receive_image",
             json={"image": photo_data, "client_id": config['client_id']}
         )
         if response.status_code == 200:
@@ -230,6 +230,7 @@ def take_photo():
             return jsonify({"status": "error", "message": "Failed to send image to server"})
     except requests.exceptions.RequestException as e:
         return jsonify({"status": "error", "message": str(e)})
+
 
 @app.route('/api/manual_capture', methods=['GET'])
 def manual_capture():
