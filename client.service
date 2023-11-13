@@ -1,0 +1,22 @@
+sudo nano /etc/systemd/system/client.service
+
+[Unit]
+Description=Client Python Script
+After=network.target
+
+[Service]
+ExecStart=/home/james/CogniCart-Client/env/bin/python /home/james/CogniCart-Client/client.py
+WorkingDirectory=/home/james/CogniCart-Client
+Restart=always
+User=james
+Group=james
+Environment="PYTHONUNBUFFERED=1"
+
+[Install]
+WantedBy=multi-user.target
+
+sudo systemctl daemon-reload
+sudo systemctl enable client.service
+sudo systemctl start client.service
+
+sudo systemctl status client.service

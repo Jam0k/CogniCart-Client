@@ -64,6 +64,21 @@ high_res_config['main']['size'] = (4608, 2592)
 picam2.configure(high_res_config)
 picam2.start()
 
+def send_heartbeat():
+    try:
+        # Include client_id in the heartbeat message
+        heartbeat_data = {'client_id': config.get('client_id', 'default_client_id')}
+        requests.post(f"{central_server_url}/heartbeat", json=heartbeat_data)
+    except requests.RequestException as e:
+        print(f"Error sending heartbeat: {e}")
+
+def start_heartbeat_timer():
+    threading.Timer(30, start_heartbeat_timer).start()
+    send_heartbeat()
+
+# Start the heartbeat timer
+start_heartbeat_timer()
+
 def motion_detection_thread():
     global motion_detected, stop_threads, picam2
     avg_frame = None
@@ -72,6 +87,7 @@ def motion_detection_thread():
 
     while not stop_threads:
         frame = picam2.capture_array()
+        original_frame = frame.copy()
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         gray = cv2.GaussianBlur(gray, (21, 21), 0)
 
@@ -91,17 +107,24 @@ def motion_detection_thread():
             if cv2.contourArea(c) < 1000:  # Adjust as needed for sensitivity
                 continue
             motion_in_this_frame = True
-            break
+
+            # Get the bounding box coordinates and draw a rectangle
+            (x, y, w, h) = cv2.boundingRect(c)
+            cv2.rectangle(original_frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
         if motion_in_this_frame:
             if last_motion_time is None or time.time() - last_motion_time >= motion_cooldown:
-                # This is the first motion detected after the cooldown period
                 last_motion_time = time.time()
                 motion_detected = True
 
+                # Encode the modified frame with rectangles
+                _, buffer = cv2.imencode('.jpg', original_frame)
+                photo_data = base64.b64encode(buffer).decode()
+
+                # Send a POST request to the central server's motion_detected endpoint
                 try:
-                    # Send a POST request to the central server's motion_detected endpoint
-                    response = requests.post(f"{central_server_url}/api/motion_detected", json={"client_id": config['client_id']})
+                    response = requests.post(f"{central_server_url}/api/receive_image", 
+                                             json={"image": photo_data, "client_id": config['client_id']})
                     if response.status_code == 200:
                         logging.info(f"Motion detected and alert sent to central server.")
                     else:
@@ -216,6 +239,8 @@ def camera_check():
 @app.route('/api/take_photo', methods=['GET'])
 def take_photo():
     frame = picam2.capture_array()
+    # Convert the color space from BGR to RGB
+    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     _, buffer = cv2.imencode('.jpg', frame)
     photo_data = base64.b64encode(buffer).decode()
 
